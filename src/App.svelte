@@ -28,7 +28,7 @@
         iceConnectionState = connection.iceConnectionState;
     };
 
-    async function step_1_initiator_create_offer() {
+    async function firstStepCreateOffer() {
         step1Busy = true;
         channel = connection.createDataChannel('data');
         channel.onmessage = (event) => alert(event.data);
@@ -45,7 +45,7 @@
         await connection.setLocalDescription(offer);
     }
 
-    async function step_2_accept_remote_offer() {
+    async function secondStepAcceptOffer() {
         const codeReader = new BrowserQRCodeReader();
         const videoInputDevices = await BrowserCodeReader.listVideoInputDevices();
 
@@ -60,7 +60,7 @@
 
     }
 
-    async function step_3_create_answer() {
+    async function thirdStepCreateAnswer() {
         step3Busy = true;
         connection.onicecandidate = (event) => {
             if (!event.candidate) {
@@ -74,12 +74,12 @@
         await connection.setLocalDescription(answer);
     }
 
-    async function step_4_accept_answer() {
+    async function finalStepAcceptAnswer() {
         const answer = JSON.parse(document.getElementById('remoteAnswer').value);
         await connection.setRemoteDescription(answer);
     }
 
-    async function send_text() {
+    async function sendText() {
         const text = document.getElementById('text').value;
 
         channel.send(text);
@@ -100,7 +100,7 @@
                 {#if step1Busy}
                     <h3>Generating...</h3>
                 {:else}
-                    <button on:click={step_1_initiator_create_offer}>create offer</button>
+                    <button on:click={firstStepCreateOffer}>create offer</button>
                 {/if}
                 <div bind:this={qrCode1}></div>
             </td>
@@ -110,7 +110,7 @@
             <td>step 2</td>
             <td></td>
             <td>
-                <button on:click={step_2_accept_remote_offer}>scan offer QR code</button>
+                <button on:click={secondStepAcceptOffer}>scan offer QR code</button>
                 <video bind:this={videoPreview1}></video>
             </td>
         </tr>
@@ -121,7 +121,7 @@
                 {#if step3Busy}
                     <h3>Generating...</h3>
                 {:else}
-                    <button on:click={step_3_create_answer}>create answer</button>
+                    <button on:click={thirdStepCreateAnswer}>create answer</button>
                 {/if}
                 <div bind:this={qrCode2}></div>
             </td>
@@ -129,7 +129,7 @@
         <tr>
             <td>step 4</td>
             <td>
-                <button on:click={step_4_accept_answer}>scan answer QR code</button>
+                <button on:click={finalStepAcceptAnswer}>scan answer QR code</button>
                 <video bind:this={videoPreview2}></video>
             </td>
             <td></td>
@@ -137,7 +137,7 @@
     </table>
     <hr/>
     <input id="text" type="text"/>
-    <input onclick="send_text()" type="button" value="send"/>
+    <input onclick="sendText()" type="button" value="send"/>
     <hr/>
     <table border="1">
         <tr>
