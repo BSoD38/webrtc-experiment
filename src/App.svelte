@@ -8,41 +8,36 @@
     let iceConnectionState;
     let videoPreview1;
     let videoPreview2;
+    let step1Busy = false;
+    let step3Busy = false;
 
     const connection = new RTCPeerConnection({
-        iceServers: [{urls: 'stun:stun.l.google.com:19302'}],
+        iceServers: [],
     });
 
     connection.ondatachannel = (e) => {
         console.log('ondatachannel');
         channel = e.channel;
-        // channel.onopen = event => console.log('onopen', event);
-        // channel.onmessage = event => console.log('onmessage', event);
         channel.onmessage = (event) => alert(event.data);
     };
 
     connection.onconnectionstatechange = () => {
         connectionState = connection.connectionState;
-        // console.log('onconnectionstatechange', connection.connectionState)
     };
     connection.oniceconnectionstatechange = () => {
         iceConnectionState = connection.iceConnectionState;
-        // console.log('oniceconnectionstatechange', connection.iceConnectionState)
     };
 
     async function step_1_initiator_create_offer() {
+        step1Busy = true;
         channel = connection.createDataChannel('data');
-        // channel.onopen = event => console.log('onopen', event)
-        // channel.onmessage = event => console.log('onmessage', event)
         channel.onmessage = (event) => alert(event.data);
 
         connection.onicecandidate = (event) => {
-            // console.log('onicecandidate', event)
             if (!event.candidate) {
                 const writer = new BrowserQRCodeSvgWriter();
-                // const data = compress(connection.localDescription, {outputEncoding: "BinaryString"});
-                // console.log(data);
                 qrCode1.appendChild(writer.write(JSON.stringify(connection.localDescription), 512, 512));
+                step1Busy = false;
             }
         };
 
@@ -54,16 +49,11 @@
         const codeReader = new BrowserQRCodeReader();
         const videoInputDevices = await BrowserCodeReader.listVideoInputDevices();
 
-        // choose your media device (webcam, frontal camera, back camera, etc.)
         const selectedDeviceId = videoInputDevices[0].deviceId;
 
         console.log(`Started decode from camera with id ${selectedDeviceId}`);
 
-        // you can use the controls to stop() the scan or switchTorch() if available
         const controls = await codeReader.decodeFromVideoDevice(selectedDeviceId, videoPreview1, async (result, error, controls) => {
-            // use the result and error values to choose your actions
-            // you can also use controls API in this scope like the controls
-            // returned from the method.
             await connection.setRemoteDescription(JSON.parse(result.getText()));
             controls.stop();
         });
@@ -71,11 +61,12 @@
     }
 
     async function step_3_create_answer() {
+        step3Busy = true;
         connection.onicecandidate = (event) => {
-            // console.log('onicecandidate', event)
             if (!event.candidate) {
                 document.getElementById('createdAnswer').value = JSON.stringify(connection.localDescription);
                 document.getElementById('createdAnswer').hidden = false;
+                step3Busy = false;
             }
         };
 
@@ -106,7 +97,11 @@
         <tr>
             <td>step 1</td>
             <td>
-                <button on:click={step_1_initiator_create_offer}>create offer</button>
+                {#if step1Busy}
+                    <h3>Generating...</h3>
+                {:else}
+                    <button on:click={step_1_initiator_create_offer}>create offer</button>
+                {/if}
                 <div bind:this={qrCode1}></div>
             </td>
             <td></td>
@@ -123,15 +118,19 @@
             <td>step 3</td>
             <td></td>
             <td>
-                <input on:click={step_3_create_answer} type="button" value="create answer"/>
+                {#if step3Busy}
+                    <h3>Generating...</h3>
+                {:else}
+                    <button on:click={step_3_create_answer}>create answer</button>
+                {/if}
                 <div bind:this={qrCode2}></div>
             </td>
         </tr>
         <tr>
             <td>step 4</td>
             <td>
-                <input id="remoteAnswer" placeholder="answer from peer" type="text"/>
-                <input on:click={step_4_accept_answer} type="button" value="accept answer"/>
+                <button on:click={step_4_accept_answer}>scan answer QR code</button>
+                <video bind:this={videoPreview2}></video>
             </td>
             <td></td>
         </tr>
