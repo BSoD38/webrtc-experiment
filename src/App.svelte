@@ -1,5 +1,7 @@
 <script>
     import {BrowserCodeReader, BrowserQRCodeReader, BrowserQRCodeSvgWriter} from "@zxing/browser";
+    import LZString from "lz-string";
+    import {compress, decompress} from "lzutf8";
 
     let channel = null;
     let qrCode1;
@@ -36,7 +38,11 @@
         connection.onicecandidate = (event) => {
             if (!event.candidate) {
                 const writer = new BrowserQRCodeSvgWriter();
-                qrCode1.appendChild(writer.write(JSON.stringify(connection.localDescription), 512, 512));
+                const orig = JSON.stringify(connection.localDescription);
+                const compressed = compress(orig);
+                console.log(orig, orig.length, compressed, compressed.length);
+                qrCode1.appendChild(writer.write(orig, 512, 512));
+                qrCode1.appendChild(writer.write(compressed, 512, 512));
                 step1Busy = false;
             }
         };
@@ -49,13 +55,16 @@
         const codeReader = new BrowserQRCodeReader();
         const videoInputDevices = await BrowserCodeReader.listVideoInputDevices();
 
-        const selectedDeviceId = videoInputDevices[0].deviceId;
+        const selectedDeviceId = videoInputDevices[2].deviceId;
 
         console.log(`Started decode from camera with id ${selectedDeviceId}`);
 
         const controls = await codeReader.decodeFromVideoDevice(selectedDeviceId, videoPreview1, async (result, error, controls) => {
-            await connection.setRemoteDescription(JSON.parse(result.getText()));
-            controls.stop();
+            if (result) {
+                console.log(result.getBarcodeFormat(), result.getResultPoints());
+                // await connection.setRemoteDescription(JSON.parse(result.getText()));
+                // controls.stop();
+            }
         });
 
     }
