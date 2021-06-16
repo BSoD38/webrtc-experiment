@@ -25,12 +25,16 @@
     let transmissionTimeout;
     let debug = "";
     let currentChunk = 0;
+    let currentStep = 0;
+    let ready = false;
 
+    // This setup is used to work within a LAN without internet access.
     const connection = new RTCPeerConnection({
         iceServers: [],
     });
 
     const onDataReceived = ({data}) => {
+        // String data either means
         if (typeof data === "string") {
             if (data === "EOT") {
                 clearTimeout(transmissionTimeout);
@@ -44,6 +48,7 @@
                 }
                 const blob = new Blob([fileChunks], {type: transmittedFileInfo.type});
                 if (transmittedFileInfo.type.includes("image")) {
+                    // The array is reassigned to trigger an update on Svelte.
                     imageBlobs = [...imageBlobs, blob];
                 } else {
                     const blobUrl = URL.createObjectURL(blob);
@@ -62,9 +67,14 @@
                 }
                 fileChunks = new Uint8Array(0);
             } else {
-                console.log(data);
-                transmittedFileInfo = JSON.parse(data);
-                transmittingFile = true;
+                try {
+                    transmittedFileInfo = JSON.parse(data);
+                    transmittingFile = true;
+                } catch (e) {
+                    console.error(e);
+                    console.log(data);
+                    debug = "Oops! Something went wrong with the transmission!";
+                }
             }
         }
         if (data instanceof ArrayBuffer && transmittingFile) {
@@ -80,6 +90,15 @@
         }
     }
 
+    function startHost() {
+        isHost = true;
+        currentStep = 1;
+    }
+
+    function startPeer() {
+        currentStep = 1;
+    }
+
     function splitFileChunks(buffer) {
         if (!buffer instanceof ArrayBuffer) {
             return;
@@ -93,15 +112,11 @@
         return chunkArray;
     }
 
-    connection.ondatachannel = (e) => {
-        console.log('ondatachannel');
-        channel = e.channel;
-        channel.onmessage = onDataReceived;
-        channel.bufferedAmountLowThreshold = 8192; //8KiB
-    };
-
     connection.onconnectionstatechange = () => {
         connectionState = connection.connectionState;
+        if (connection.connectionState === "connected") {
+            ready = true;
+        }
     };
     connection.oniceconnectionstatechange = () => {
         iceConnectionState = connection.iceConnectionState;
@@ -111,7 +126,7 @@
     };
 
     async function firstStepCreateOffer() {
-        isHost = true;
+        currentStep = 2;
         step1Busy = true;
         channel = connection.createDataChannel('data');
         channel.onmessage = onDataReceived;
@@ -130,6 +145,7 @@
     }
 
     async function secondStepAcceptOffer() {
+        currentStep = 2;
         const codeReader = new BrowserQRCodeReader();
         const videoInputDevices = await BrowserCodeReader.listVideoInputDevices();
 
@@ -151,6 +167,7 @@
     }
 
     async function thirdStepCreateAnswer() {
+        currentStep = 3;
         step3Busy = true;
         connection.onicecandidate = (event) => {
             if (!event.candidate) {
@@ -169,6 +186,7 @@
     }
 
     async function finalStepAcceptAnswer() {
+        currentStep = 3;
         const codeReader = new BrowserQRCodeReader();
         const videoInputDevices = await BrowserCodeReader.listVideoInputDevices();
 
@@ -180,6 +198,7 @@
                 controls.stop();
                 qrCodeState2 = "OK!";
                 await connection.setRemoteDescription(JSON.parse(result.getText()));
+                ready = true;
             }
             if (error) {
                 qrCodeState2 = `${error.name} ${error.getKind()} ${error.message}`;
@@ -219,71 +238,61 @@
 </script>
 
 <main>
-    <table border="1" width="100%">
-        <tr>
-            <th>#</th>
-            <th>initiator</th>
-            <th>peer</th>
-        </tr>
-        <tr>
-            <td>step 1</td>
-            <td>
+    <h2>File transmission system in a LAN without internet</h2>
+    {#if currentStep === 0}
+        <div>
+            <h3>Do you want to host a session or connect to an existing one?</h3>
+            <button on:click={startHost}>Host a session</button>
+            <button on:click={startPeer}>Connect to host</button>
+        </div>
+    {/if}
+    {#if ready}
+        <h3>Awesome! Both devices are now ready to send files to each other.</h3>
+        <input bind:files type="file"/>
+        <button on:click={sendFile}>Send</button>
+        <code>
+            {debug}
+        </code>
+        <div>
+            {#each imageBlobs as image}
+                <img src={URL.createObjectURL(image)} alt="image"/>
+            {/each}
+        </div>
+    {:else}
+        {#if isHost}
+            {#if currentStep === 1}
+                <h3>First of all, connect both devices to the same local network (such as an access point).</h3>
+                <h3>When both devices are ready, click this button.</h3>
+                <button on:click={firstStepCreateOffer}>Let's go!</button>
+            {:else if currentStep === 2}
+                <h3>Now, scan this QR Code with your other device.</h3>
                 {#if step1Busy}
-                    <h3>Generating...</h3>
-                {:else}
-                    <button on:click={firstStepCreateOffer}>create offer</button>
+                    <h3>Generating QR Code...</h3>
                 {/if}
                 <div bind:this={qrCode1}></div>
-            </td>
-            <td></td>
-        </tr>
-        <tr>
-            <td>step 2 and 3</td>
-            <td></td>
-            <td>
-                <button on:click={secondStepAcceptOffer}>scan offer QR code</button>
+            {:else if currentStep === 3}
+                <h3>Great! Now scan the QR Code generated by the other device.</h3>
+                <video bind:this={videoPreview2}></video>
+                {qrCodeState2}
+            {/if}
+        {:else}
+            {#if currentStep === 1}
+                <h3>First of all, connect both devices to the same local network (such as an access point).</h3>
+                <h3>When both devices are ready, click this button.</h3>
+                <button on:click={secondStepAcceptOffer}>Let's go!</button>
+            {:else if currentStep === 2}
+                <h3>Now, scan the QR Code generated by the host device.</h3>
                 <video bind:this={videoPreview1}></video>
                 {qrCodeState1}
+            {:else if currentStep === 3}
+                <h3>Great! Now, scan this QR Code with the host device.</h3>
                 {#if step3Busy}
                     <h3>Generating...</h3>
                 {/if}
                 <div bind:this={qrCode2}></div>
-            </td>
-        </tr>
-        <tr>
-            <td>step 4</td>
-            <td>
-                <video bind:this={videoPreview2}></video>
-                {qrCodeState2}
-            </td>
-            <td></td>
-        </tr>
-    </table>
-    <hr/>
-    <input bind:files accept="image/jpeg, image/webp" type="file"/>
-    <button on:click={sendFile}>Send</button>
-    <hr/>
-    <table border="1">
-        <tr>
-            <th colspan="2">connection</th>
-        </tr>
-        <tr>
-            <th>connectionState</th>
-            <td id="connectionState">{connectionState}</td>
-        </tr>
-        <tr>
-            <th>iceConnectionState</th>
-            <td id="iceConnectionState">{iceConnectionState}</td>
-        </tr>
-    </table>
-    <code>
-        {debug}
-    </code>
-    <div>
-        {#each imageBlobs as image}
-            <img src={URL.createObjectURL(image)} alt="image"/>
-        {/each}
-    </div>
+            {/if}
+        {/if}
+    {/if}
 </main>
 
 <style>
