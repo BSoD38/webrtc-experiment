@@ -1,6 +1,7 @@
 <script>
-    import {BrowserCodeReader, BrowserQRCodeReader, BrowserQRCodeSvgWriter} from "@zxing/browser";
+    import {BrowserCodeReader, BrowserQRCodeReader} from "@zxing/browser";
     import QRCode from "easyqrcodejs";
+    import {buf} from "crc-32";
 
     const FILE_CHUNK_SIZE = 65536; //64KiB
 
@@ -18,7 +19,7 @@
     let qrCodeState2 = "";
     let files;
     let imageBlobs = [];
-    let fileChunks = new ArrayBuffer(0);
+    let fileChunks = new Uint8Array(0);
     let transmittingFile = false;
     let transmittedFileInfo = {};
     let transmissionTimeout;
@@ -37,10 +38,31 @@
                 if (fileChunks.byteLength !== transmittedFileInfo.size) {
                     throw new Error(`Transmission failed. Expected size is ${transmittedFileInfo.size} bytes, but the received stream is ${fileChunks.byteLength} bytes.`);
                 }
-                imageBlobs.push(new Blob([fileChunks], {type: transmittedFileInfo.type}));
-                console.log(imageBlobs);
-                fileChunks = new ArrayBuffer(0);
+                const receivedCRC32 = buf(fileChunks);
+                if (receivedCRC32 !== transmittedFileInfo.crc32) {
+                    throw new Error(`File has been corrupted. Expected hash is ${transmittedFileInfo.crc32}, but the received buffer hash is ${receivedCRC32}.`);
+                }
+                const blob = new Blob([fileChunks], {type: transmittedFileInfo.type});
+                if (transmittedFileInfo.type.includes("image")) {
+                    imageBlobs = [...imageBlobs, blob];
+                } else {
+                    const blobUrl = URL.createObjectURL(blob);
+                    const link = document.createElement("a");
+                    link.href = blobUrl;
+                    link.download = transmittedFileInfo.name;
+                    document.body.appendChild(link);
+                    link.dispatchEvent(
+                        new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window
+                        })
+                    );
+                    document.body.removeChild(link);
+                }
+                fileChunks = new Uint8Array(0);
             } else {
+                console.log(data);
                 transmittedFileInfo = JSON.parse(data);
                 transmittingFile = true;
             }
@@ -48,10 +70,12 @@
         if (data instanceof ArrayBuffer && transmittingFile) {
             clearTimeout(transmissionTimeout);
             // Concatenate the file chunk to the array buffer.
-            const appendedChunks = new Uint8Array(fileChunks.byteLength + data.byteLength);
-            appendedChunks.set(fileChunks, 0);
-            appendedChunks.set(data, fileChunks.byteLength);
-            fileChunks = appendedChunks.buffer;
+            const buffer = new ArrayBuffer(fileChunks.byteLength + data.byteLength);
+            const appendedChunks = new Uint8Array(buffer);
+            appendedChunks.set(fileChunks);
+            appendedChunks.set(new Uint8Array(data), fileChunks.byteLength);
+            fileChunks = appendedChunks;
+            debug = `Received ${(fileChunks.byteLength/1024).toFixed(0)}/${(transmittedFileInfo.size / 1024).toFixed(0)}KiB. (${((fileChunks.byteLength/transmittedFileInfo.size) * 100).toFixed(2)}%)`;
             transmissionTimeout = setTimeout(() => {onDataReceived({data: "EOT"})}, 5000);
         }
     }
@@ -73,7 +97,7 @@
         console.log('ondatachannel');
         channel = e.channel;
         channel.onmessage = onDataReceived;
-        channel.bufferedAmountLowThreshold = 8192; //64KiB
+        channel.bufferedAmountLowThreshold = 8192; //8KiB
     };
 
     connection.onconnectionstatechange = () => {
@@ -91,7 +115,7 @@
         step1Busy = true;
         channel = connection.createDataChannel('data');
         channel.onmessage = onDataReceived;
-        channel.bufferedAmountLowThreshold = 8192; //64KiB
+        channel.bufferedAmountLowThreshold = 8192; //8KiB
 
         connection.onicecandidate = (event) => {
             if (!event.candidate) {
@@ -110,8 +134,6 @@
         const videoInputDevices = await BrowserCodeReader.listVideoInputDevices();
 
         const selectedDeviceId = videoInputDevices[0].deviceId;
-
-        console.log(`Started decode from camera with id ${selectedDeviceId}`);
 
         qrCodeState1 = "Reading...";
         const controls = await codeReader.decodeFromVideoDevice(selectedDeviceId, videoPreview1, async (result, error) => {
@@ -152,8 +174,6 @@
 
         const selectedDeviceId = videoInputDevices[0].deviceId;
 
-        console.log(`Started decode from camera with id ${selectedDeviceId}`);
-
         qrCodeState2 = "Reading...";
         const controls = await codeReader.decodeFromVideoDevice(selectedDeviceId, videoPreview2, async (result, error) => {
             if (result) {
@@ -169,19 +189,20 @@
 
     async function sendFile() {
         const file = files[0];
-        if (file.size > 50*1024*1024) {
-            throw new Error("The file is over 50MB");
+        if (file.size > 200*1024*1024) {
+            throw new Error("The file is over 200MB");
         }
+        const buffer = new Uint8Array(await file.arrayBuffer());
         // The first data transmission contains info about the file to transfer
-        channel.send(JSON.stringify({name: file.name, type: file.type, size: file.size}));
-        // The file is then split into 16KiB ArrayBuffer chunks
-        const chunks = splitFileChunks(await file.arrayBuffer());
+        channel.send(JSON.stringify({name: file.name, type: file.type, size: file.size, crc32: buf(buffer)}));
+        // The file is then split into 64KiB ArrayBuffer chunks
+        const chunks = splitFileChunks(buffer);
 
         channel.onbufferedamountlow = () => {
             console.log(currentChunk);
             channel.send(chunks[currentChunk]);
             currentChunk++;
-            debug = `Transmitted ${(currentChunk/chunks.length)*100}% of file.`;
+            debug = `Transmitted ${((currentChunk/chunks.length)*100).toFixed(2)}% of file.`;
             if (currentChunk >= chunks.length) {
                 console.log("end");
                 channel.onbufferedamountlow = undefined;
@@ -270,5 +291,10 @@
         display: block;
         white-space: pre-wrap;
         font-family: monospace;
+    }
+    img {
+        display: inline-block;
+        max-width: 500px;
+        max-height: 500px;
     }
 </style>
