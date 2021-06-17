@@ -1,5 +1,5 @@
 <script>
-    import {BrowserCodeReader, BrowserQRCodeReader} from "@zxing/browser";
+    import jsQR from "jsqr";
     import QRCode from "easyqrcodejs";
     import {buf} from "crc-32";
 
@@ -11,8 +11,10 @@
     let qrCode2;
     let connectionState;
     let iceConnectionState;
-    let videoPreview1;
-    let videoPreview2;
+    let canvasPreview1;
+    let video1;
+    let canvasPreview2;
+    let video2;
     let step1Busy = false;
     let step3Busy = false;
     let qrCodeState1 = "";
@@ -27,11 +29,33 @@
     let currentChunk = 0;
     let currentStep = 0;
     let ready = false;
+    let stream = null;
 
     // This setup is used to work within a LAN without internet access.
     const connection = new RTCPeerConnection({
         iceServers: [],
     });
+
+    connection.onconnectionstatechange = () => {
+        connectionState = connection.connectionState;
+        if (connection.connectionState === "connected") {
+            ready = true;
+        }
+    };
+
+    connection.oniceconnectionstatechange = () => {
+        iceConnectionState = connection.iceConnectionState;
+        if (connection.iceConnectionState === "checking" && isHost === true) {
+            finalStepAcceptAnswer();
+        }
+    };
+
+    connection.ondatachannel = (e) => {
+        console.log('ondatachannel');
+        channel = e.channel;
+        channel.onmessage = onDataReceived;
+        channel.bufferedAmountLowThreshold = 8192; //8KiB
+    };
 
     const onDataReceived = ({data}) => {
         // String data either means
@@ -47,6 +71,7 @@
                     throw new Error(`File has been corrupted. Expected hash is ${transmittedFileInfo.crc32}, but the received buffer hash is ${receivedCRC32}.`);
                 }
                 const blob = new Blob([fileChunks], {type: transmittedFileInfo.type});
+                // Image files are added directly to the DOM. Other files are downloaded onto the computer.
                 if (transmittedFileInfo.type.includes("image")) {
                     // The array is reassigned to trigger an update on Svelte.
                     imageBlobs = [...imageBlobs, blob];
@@ -112,18 +137,39 @@
         return chunkArray;
     }
 
-    connection.onconnectionstatechange = () => {
-        connectionState = connection.connectionState;
-        if (connection.connectionState === "connected") {
-            ready = true;
+    async function handleConnectionQRCode(canvas, video, callback) {
+        if (video.paused) {
+            video.play();
         }
-    };
-    connection.oniceconnectionstatechange = () => {
-        iceConnectionState = connection.iceConnectionState;
-        if (connection.iceConnectionState === "checking" && isHost === true) {
-            finalStepAcceptAnswer();
+        if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+            requestAnimationFrame(() => {handleConnectionQRCode(canvas, video, callback)});
+            return;
         }
-    };
+        canvas.hidden = false;
+        canvas.height = video.videoHeight;
+        canvas.width = video.videoWidth;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, {inversionAttempts: "dontInvert"});
+        if (code) {
+            try {
+                video.pause();
+                for (const track of stream.getTracks()) {
+                    track.stop();
+                }
+                video.remove();
+                const json = JSON.parse(code.data);
+                await connection.setRemoteDescription(json);
+                callback();
+            } catch (e) {
+                console.error(e);
+                requestAnimationFrame(() => {handleConnectionQRCode(canvas, video, callback)});
+            }
+        } else {
+            requestAnimationFrame(() => {handleConnectionQRCode(canvas, video, callback)});
+        }
+    }
 
     async function firstStepCreateOffer() {
         currentStep = 2;
@@ -134,8 +180,12 @@
 
         connection.onicecandidate = (event) => {
             if (!event.candidate) {
-                const orig = JSON.stringify(connection.localDescription);
-                new QRCode(qrCode1, {text: orig, height: 500, width: 500, correctLevel: QRCode.CorrectLevel.L});
+                new QRCode(qrCode1, {
+                    text: JSON.stringify(connection.localDescription),
+                    height: 350,
+                    width: 350,
+                    correctLevel: QRCode.CorrectLevel.L
+                });
                 step1Busy = false;
             }
         };
@@ -146,24 +196,15 @@
 
     async function secondStepAcceptOffer() {
         currentStep = 2;
-        const codeReader = new BrowserQRCodeReader();
-        const videoInputDevices = await BrowserCodeReader.listVideoInputDevices();
 
-        const selectedDeviceId = videoInputDevices[0].deviceId;
+        qrCodeState1 = "Waiting for camera...";
+        video1 = document.createElement("video");
+        video1.setAttribute("playsinline", "true");
+        stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment"}});
+        video1.srcObject = stream;
 
+        requestAnimationFrame(() => {handleConnectionQRCode(canvasPreview1, video1, thirdStepCreateAnswer)});
         qrCodeState1 = "Reading...";
-        const controls = await codeReader.decodeFromVideoDevice(selectedDeviceId, videoPreview1, async (result, error) => {
-            if (result) {
-                controls.stop();
-                qrCodeState1 = "OK!";
-                await connection.setRemoteDescription(JSON.parse(result.getText()));
-                await thirdStepCreateAnswer();
-            }
-            if (error) {
-                qrCodeState1 = `${error.name} ${error.getKind()} ${error.message}`;
-            }
-        });
-
     }
 
     async function thirdStepCreateAnswer() {
@@ -171,8 +212,12 @@
         step3Busy = true;
         connection.onicecandidate = (event) => {
             if (!event.candidate) {
-                const orig = JSON.stringify(connection.localDescription);
-                new QRCode(qrCode2, {text: orig, height: 500, width: 500, correctLevel: QRCode.CorrectLevel.L});
+                new QRCode(qrCode2, {
+                    text: JSON.stringify(connection.localDescription),
+                    width: 350,
+                    height: 350,
+                    correctLevel: QRCode.CorrectLevel.L
+                });
                 step3Busy = false;
             }
         };
@@ -187,23 +232,15 @@
 
     async function finalStepAcceptAnswer() {
         currentStep = 3;
-        const codeReader = new BrowserQRCodeReader();
-        const videoInputDevices = await BrowserCodeReader.listVideoInputDevices();
 
-        const selectedDeviceId = videoInputDevices[0].deviceId;
+        qrCodeState2 = "Waiting for camera...";
+        video2 = document.createElement("video");
+        stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment"}});
+        video2.srcObject = stream;
+        video2.setAttribute("playsinline", "true");
 
+        requestAnimationFrame(() => {handleConnectionQRCode(canvasPreview2, video2, () => {ready = true;});});
         qrCodeState2 = "Reading...";
-        const controls = await codeReader.decodeFromVideoDevice(selectedDeviceId, videoPreview2, async (result, error) => {
-            if (result) {
-                controls.stop();
-                qrCodeState2 = "OK!";
-                await connection.setRemoteDescription(JSON.parse(result.getText()));
-                ready = true;
-            }
-            if (error) {
-                qrCodeState2 = `${error.name} ${error.getKind()} ${error.message}`;
-            }
-        });
     }
 
     async function sendFile() {
@@ -269,10 +306,10 @@
                 {#if step1Busy}
                     <h3>Generating QR Code...</h3>
                 {/if}
-                <div bind:this={qrCode1}></div>
+                <div class="qrcode" bind:this={qrCode1}></div>
             {:else if currentStep === 3}
                 <h3>Great! Now scan the QR Code generated by the other device.</h3>
-                <video bind:this={videoPreview2}></video>
+                <canvas hidden bind:this={canvasPreview2}></canvas>
                 {qrCodeState2}
             {/if}
         {:else}
@@ -282,14 +319,14 @@
                 <button on:click={secondStepAcceptOffer}>Let's go!</button>
             {:else if currentStep === 2}
                 <h3>Now, scan the QR Code generated by the host device.</h3>
-                <video bind:this={videoPreview1}></video>
+                <canvas hidden bind:this={canvasPreview1}></canvas>
                 {qrCodeState1}
             {:else if currentStep === 3}
                 <h3>Great! Now, scan this QR Code with the host device.</h3>
                 {#if step3Busy}
                     <h3>Generating...</h3>
                 {/if}
-                <div bind:this={qrCode2}></div>
+                <div class="qrcode" bind:this={qrCode2}></div>
             {/if}
         {/if}
     {/if}
@@ -301,9 +338,18 @@
         white-space: pre-wrap;
         font-family: monospace;
     }
+
     img {
         display: inline-block;
         max-width: 500px;
         max-height: 500px;
+    }
+
+    .qrcode {
+        text-align: center;
+    }
+
+    .qrcode > * {
+        margin: 20px;
     }
 </style>
