@@ -4,6 +4,8 @@ This is done using WebRTC, and removing the ICE servers. Authentication is handl
 
 Based on [this blog post](https://mac-blog.org.ua/webrtc-one-to-one-without-signaling-server/).
 
+The file transfer system is home-made.
+
 ---
 
 ## Get started
