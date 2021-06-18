@@ -1,4 +1,4 @@
-This is an experimental Svelte app for connecting two peers on a local network without any internet access.
+This is an experimental Svelte app for transfering files between two peers on a local network without any internet access.
 
 This is done using WebRTC, and removing the ICE servers. Authentication is handled manually using QR Codes.
 
